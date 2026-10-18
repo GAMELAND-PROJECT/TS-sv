@@ -1,0 +1,370 @@
+#!/usr/bin/env bash
+# ==============================================================================
+#  _         _____      _   _ 
+# | |_ ___ _|___ /  ___| |_| |
+# | __/ __|_| |_ \ / __| __| |
+# | |_\__ \_ ___)| | (__| |_| |
+#  \__|___/ |____/ \___|\__|_|
+#
+# TeamSpeak 3 Enterprise Server Controller & Management Suite
+# Designed for Ubuntu Linux (20.04 / 22.04 / 24.04 LTS)
+# ==============================================================================
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONFIG_FILE="${SCRIPT_DIR}/config/manager.conf"
+
+if [[ -f "$CONFIG_FILE" ]]; then
+    # shellcheck source=/dev/null
+    source "$CONFIG_FILE"
+elif [[ -f "/opt/teamspeak/config/manager.conf" ]]; then
+    # shellcheck source=/dev/null
+    source "/opt/teamspeak/config/manager.conf"
+fi
+
+TS_DIR="${TS_DIR:-/opt/teamspeak}"
+TS_USER="${TS_USER:-teamspeak}"
+PORT_VOICE="${PORT_VOICE:-9987}"
+PORT_FILE="${PORT_FILE:-30033}"
+PORT_QUERY="${PORT_QUERY:-10011}"
+PORT_QUERY_SSH="${PORT_QUERY_SSH:-10022}"
+WATCHDOG_LOG="${WATCHDOG_LOG:-/var/log/ts3-watchdog.log}"
+
+# Terminal Styling & Colors
+BOLD="\033[1m"
+GREEN="\033[0;32m"
+RED="\033[0;31m"
+YELLOW="\033[1;33m"
+BLUE="\033[0;34m"
+PURPLE="\033[0;35m"
+CYAN="\033[0;36m"
+WHITE="\033[1;37m"
+GRAY="\033[0;90m"
+NC="\033[0m"
+
+show_banner() {
+    clear 2>/dev/null || true
+    echo -e "${CYAN}${BOLD}"
+    cat << "EOF"
+  _______ _____ ____    _____                            
+ |__   __/ ____|___ \  / ____|                           
+    | | | (___   __) || |     ___  _ __ ___  _ __   __ _ 
+    | |  \___ \ |__ < | |    / _ \| '_ ` _ \| '_ \ / _` |
+    | |  ____) |___) || |___| (_) | | | | | | |_) | (_| |
+    |_| |_____/|____/  \_____\___/|_| |_| |_| .__/ \__,_|
+                                            | |          
+   Enterprise High-Availability Controller  |_|   v2.0   
+EOF
+    echo -e "${NC}${GRAY}────────────────────────────────────────────────────────────────────────${NC}"
+}
+
+require_root() {
+    if [[ $EUID -ne 0 ]]; then
+        echo -e "${RED}[ERROR]${NC} This command requires administrative privileges. Please run with: ${BOLD}sudo ts3ctl $1${NC}"
+        exit 1
+    fi
+}
+
+cmd_start() {
+    require_root "start"
+    echo -e "${BLUE}▶ Starting TeamSpeak 3 Server & Watchdog...${NC}"
+    systemctl start teamspeak.service
+    systemctl start ts3-watchdog.timer 2>/dev/null || true
+    sleep 2
+    if systemctl is-active --quiet teamspeak.service; then
+        echo -e "${GREEN}✓ TeamSpeak 3 is now running and monitored!${NC}"
+    else
+        echo -e "${RED}✗ Failed to start TeamSpeak 3. Check logs with: ts3ctl logs${NC}"
+    fi
+}
+
+cmd_stop() {
+    require_root "stop"
+    echo -e "${YELLOW}■ Stopping TeamSpeak 3 Server...${NC}"
+    systemctl stop teamspeak.service
+    echo -e "${GREEN}✓ TeamSpeak 3 has been stopped.${NC}"
+}
+
+cmd_restart() {
+    require_root "restart"
+    echo -e "${CYAN}↻ Restarting TeamSpeak 3 Server safely...${NC}"
+    systemctl restart teamspeak.service
+    sleep 2
+    if systemctl is-active --quiet teamspeak.service; then
+        echo -e "${GREEN}✓ TeamSpeak 3 successfully restarted.${NC}"
+    else
+        echo -e "${RED}✗ Failed to restart TeamSpeak 3. Check logs: ts3ctl logs${NC}"
+    fi
+}
+
+cmd_status() {
+    show_banner
+    local active_status="INACTIVE"
+    local status_color="$RED"
+    local pid="N/A"
+    local uptime="N/A"
+    local mem="N/A"
+    local cpu="N/A"
+
+    if systemctl is-active --quiet teamspeak.service; then
+        active_status="ONLINE / ACTIVE"
+        status_color="$GREEN"
+        pid=$(pgrep -u "$TS_USER" -x "ts3server" | head -n1 || echo "N/A")
+        if [[ "$pid" != "N/A" ]]; then
+            uptime=$(ps -p "$pid" -o etime= | tr -d ' ' || echo "N/A")
+            mem=$(ps -p "$pid" -o %mem=,rss= | awk '{printf "%.1f%% (%d MB)", $1, $2/1024}' || echo "N/A")
+            cpu=$(ps -p "$pid" -o %cpu= | tr -d ' ' | awk '{printf "%.1f%%", $1}' || echo "N/A")
+        fi
+    fi
+
+    local watchdog_status="INACTIVE"
+    local watchdog_color="$YELLOW"
+    if systemctl is-active --quiet ts3-watchdog.timer 2>/dev/null; then
+        watchdog_status="ACTIVE (Every 1m)"
+        watchdog_color="$GREEN"
+    fi
+
+    local version="Unknown"
+    if [[ -f "${TS_DIR}/version.txt" ]]; then
+        version=$(cat "${TS_DIR}/version.txt")
+    fi
+
+    echo -e "${WHITE}${BOLD}SERVER METRICS & STATUS${NC}"
+    echo -e "  Service State:       ${status_color}${BOLD}${active_status}${NC}"
+    echo -e "  Watchdog Auto-Heal:  ${watchdog_color}${BOLD}${watchdog_status}${NC}"
+    echo -e "  Installed Version:   ${CYAN}${version}${NC}"
+    echo -e "  Process PID:         ${WHITE}${pid}${NC}"
+    echo -e "  Process Uptime:      ${WHITE}${uptime}${NC}"
+    echo -e "  Memory Usage:        ${WHITE}${mem}${NC}"
+    echo -e "  CPU Usage:           ${WHITE}${cpu}${NC}"
+    echo ""
+
+    echo -e "${WHITE}${BOLD}NETWORK PORTS HEALTH${NC}"
+    check_port_status() {
+        local port="$1"
+        local proto="$2"
+        local label="$3"
+        local p_status="DOWN"
+        local p_color="$RED"
+
+        if [[ "$proto" == "udp" ]]; then
+            if ss -lunp 2>/dev/null | grep -q ":${port} "; then
+                p_status="LISTENING"
+                p_color="$GREEN"
+            fi
+        else
+            if ss -ltnp 2>/dev/null | grep -q ":${port} "; then
+                p_status="LISTENING"
+                p_color="$GREEN"
+            fi
+        fi
+        echo -e "  ${label} (${port}/${proto}): ${p_color}${BOLD}${p_status}${NC}"
+    }
+
+    check_port_status "$PORT_VOICE" "udp" "Voice Port       "
+    check_port_status "$PORT_FILE" "tcp" "File Transfer    "
+    check_port_status "$PORT_QUERY" "tcp" "ServerQuery Raw  "
+    check_port_status "$PORT_QUERY_SSH" "tcp" "ServerQuery SSH  "
+    echo ""
+
+    echo -e "${WHITE}${BOLD}RECENT ACTIVITY LOGS${NC}"
+    journalctl -u teamspeak.service -n 5 --no-pager -o short-precise 2>/dev/null || echo "No logs available."
+    echo -e "${GRAY}────────────────────────────────────────────────────────────────────────${NC}"
+}
+
+cmd_logs() {
+    echo -e "${CYAN}Streaming live TeamSpeak logs (Press Ctrl+C to exit)...${NC}"
+    journalctl -u teamspeak.service -f
+}
+
+cmd_token() {
+    echo -e "${CYAN}=== Searching for ServerAdmin Privilege Key / Token ===${NC}"
+    local token=""
+    token=$(journalctl -u teamspeak.service --no-pager 2>/dev/null | grep -oE 'token=[a-zA-Z0-9+/=]+' | tail -n1 || true)
+    
+    if [[ -z "$token" ]] && [[ -d "${TS_DIR}/logs" ]]; then
+        token=$(grep -oE 'token=[a-zA-Z0-9+/=]+' "${TS_DIR}/logs/"* 2>/dev/null | tail -n1 || true)
+    fi
+
+    if [[ -n "$token" ]]; then
+        echo -e "${GREEN}${BOLD}ServerAdmin Privilege Token Found:${NC}"
+        echo -e "${WHITE}${BOLD}${token}${NC}"
+        echo ""
+        echo -e "${YELLOW}Enter this key into your TeamSpeak Client: Permissions -> Use Privilege Key${NC}"
+    else
+        echo -e "${YELLOW}No initial token found in recent logs.${NC}"
+        echo -e "If the token was already used or purged, you can generate a new one via ServerQuery (ts3ctl query)."
+    fi
+}
+
+cmd_backup() {
+    require_root "backup"
+    "${TS_DIR}/scripts/backup.sh" create
+}
+
+cmd_backups() {
+    "${TS_DIR}/scripts/backup.sh" list
+}
+
+cmd_restore() {
+    require_root "restore"
+    "${TS_DIR}/scripts/backup.sh" restore "${1:-}"
+}
+
+cmd_update() {
+    require_root "update"
+    "${TS_DIR}/scripts/update.sh" update "${1:-}"
+}
+
+cmd_check_update() {
+    "${TS_DIR}/scripts/update.sh" check
+}
+
+cmd_watchdog() {
+    local subaction="${1:-status}"
+    case "$subaction" in
+        run)
+            require_root "watchdog run"
+            echo -e "${CYAN}Executing manual watchdog health check & auto-heal...${NC}"
+            "${TS_DIR}/scripts/watchdog.sh"
+            ;;
+        enable)
+            require_root "watchdog enable"
+            systemctl enable --now ts3-watchdog.timer
+            echo -e "${GREEN}✓ Watchdog timer enabled and running!${NC}"
+            ;;
+        disable)
+            require_root "watchdog disable"
+            systemctl disable --now ts3-watchdog.timer
+            echo -e "${YELLOW}Watchdog timer disabled.${NC}"
+            ;;
+        status|logs)
+            if [[ -f "$WATCHDOG_LOG" ]]; then
+                echo -e "${CYAN}=== Last 20 Watchdog Log Entries ===${NC}"
+                tail -n 20 "$WATCHDOG_LOG"
+            else
+                echo -e "${YELLOW}Watchdog log not yet generated ($WATCHDOG_LOG).${NC}"
+            fi
+            ;;
+        *)
+            echo "Usage: ts3ctl watchdog {run|status|enable|disable}"
+            ;;
+    esac
+}
+
+cmd_firewall() {
+    require_root "firewall"
+    if ! command -v ufw >/dev/null 2>&1; then
+        echo -e "${RED}UFW is not installed. Run 'apt install ufw'.${NC}"
+        exit 1
+    fi
+
+    echo -e "${BLUE}Configuring UFW firewall rules for TeamSpeak 3...${NC}"
+    ufw allow "${PORT_VOICE}/udp" comment 'TeamSpeak 3 Voice'
+    ufw allow "${PORT_FILE}/tcp" comment 'TeamSpeak 3 File Transfer'
+    ufw allow "${PORT_QUERY}/tcp" comment 'TeamSpeak 3 ServerQuery Raw'
+    ufw allow "${PORT_QUERY_SSH}/tcp" comment 'TeamSpeak 3 ServerQuery SSH'
+    echo -e "${GREEN}✓ Firewall rules successfully applied for TeamSpeak ports!${NC}"
+}
+
+cmd_query() {
+    if command -v nc >/dev/null 2>&1; then
+        echo -e "${CYAN}Connecting to ServerQuery on 127.0.0.1:${PORT_QUERY} (Type 'help' or 'quit')...${NC}"
+        nc 127.0.0.1 "$PORT_QUERY"
+    elif command -v telnet >/dev/null 2>&1; then
+        telnet 127.0.0.1 "$PORT_QUERY"
+    else
+        echo -e "${RED}Neither 'nc' (netcat) nor 'telnet' is installed. Run 'apt install netcat-openbsd'.${NC}"
+    fi
+}
+
+cmd_menu() {
+    while true; do
+        show_banner
+        echo -e "${WHITE}${BOLD}MANAGEMENT MENU${NC}"
+        echo -e "  ${CYAN}[1]${NC} Server Status & Metrics"
+        echo -e "  ${CYAN}[2]${NC} Start TeamSpeak"
+        echo -e "  ${CYAN}[3]${NC} Stop TeamSpeak"
+        echo -e "  ${CYAN}[4]${NC} Restart TeamSpeak"
+        echo -e "  ${CYAN}[5]${NC} View Live Logs"
+        echo -e "  ${CYAN}[6]${NC} Get ServerAdmin Privilege Token"
+        echo -e "  ${CYAN}[7]${NC} Create Backup"
+        echo -e "  ${CYAN}[8]${NC} List Backups"
+        echo -e "  ${CYAN}[9]${NC} Restore from Backup"
+        echo -e "  ${CYAN}[10]${NC} Check for TeamSpeak Updates"
+        echo -e "  ${CYAN}[11]${NC} Update TeamSpeak Now"
+        echo -e "  ${CYAN}[12]${NC} Watchdog Logs / Test Run"
+        echo -e "  ${CYAN}[13]${NC} Configure UFW Firewall"
+        echo -e "  ${CYAN}[0]${NC} Exit"
+        echo ""
+        read -rp "Select an option [0-13]: " choice
+
+        case "$choice" in
+            1) cmd_status; read -rp "Press Enter to continue..." ;;
+            2) cmd_start; read -rp "Press Enter to continue..." ;;
+            3) cmd_stop; read -rp "Press Enter to continue..." ;;
+            4) cmd_restart; read -rp "Press Enter to continue..." ;;
+            5) cmd_logs ;;
+            6) cmd_token; read -rp "Press Enter to continue..." ;;
+            7) cmd_backup; read -rp "Press Enter to continue..." ;;
+            8) cmd_backups; read -rp "Press Enter to continue..." ;;
+            9) 
+               cmd_backups
+               read -rp "Enter backup archive name to restore: " target_b
+               cmd_restore "$target_b"
+               read -rp "Press Enter to continue..." 
+               ;;
+            10) cmd_check_update; read -rp "Press Enter to continue..." ;;
+            11) cmd_update ""; read -rp "Press Enter to continue..." ;;
+            12) cmd_watchdog status; read -rp "Press Enter to continue..." ;;
+            13) cmd_firewall; read -rp "Press Enter to continue..." ;;
+            0) echo "Goodbye!"; exit 0 ;;
+            *) echo -e "${RED}Invalid option!${NC}"; sleep 1 ;;
+        esac
+    done
+}
+
+action="${1:-menu}"
+case "$action" in
+    start)       cmd_start ;;
+    stop)        cmd_stop ;;
+    restart)     cmd_restart ;;
+    status)      cmd_status ;;
+    logs)        cmd_logs ;;
+    token|key)   cmd_token ;;
+    backup)      cmd_backup ;;
+    backups|list-backups) cmd_backups ;;
+    restore)     shift; cmd_restore "${1:-}" ;;
+    update|upgrade) shift; cmd_update "${1:-}" ;;
+    check-update) cmd_check_update ;;
+    watchdog)    shift; cmd_watchdog "${1:-status}" ;;
+    firewall)    cmd_firewall ;;
+    query|console) cmd_query ;;
+    menu)        cmd_menu ;;
+    help|--help|-h)
+        show_banner
+        echo -e "Usage: ${BOLD}ts3ctl <command>${NC}"
+        echo ""
+        echo "Commands:"
+        echo "  status         Display live server metrics, ports & watchdog health"
+        echo "  start          Start TeamSpeak server and watchdog"
+        echo "  stop           Stop TeamSpeak server"
+        echo "  restart        Restart TeamSpeak server gracefully"
+        echo "  logs           Stream live systemd journal logs"
+        echo "  token          Find the ServerAdmin initial privilege key"
+        echo "  backup         Generate a hot timestamped backup (.tar.gz)"
+        echo "  backups        List all existing backups"
+        echo "  restore <file> Restore server from a backup archive"
+        echo "  update         Update TeamSpeak to the latest release safely"
+        echo "  check-update   Check for newer TeamSpeak server versions"
+        echo "  watchdog       Manage or inspect auto-healing watchdog"
+        echo "  firewall       Automatically apply optimal UFW firewall rules"
+        echo "  query          Interactive ServerQuery connection"
+        echo "  menu           Open the interactive visual menu"
+        ;;
+    *)
+        echo -e "${RED}Unknown command: $action${NC}"
+        echo "Type 'ts3ctl help' for available commands or 'ts3ctl menu' for interactive menu."
+        exit 1
+        ;;
+esac

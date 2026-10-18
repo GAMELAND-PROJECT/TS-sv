@@ -1,0 +1,37 @@
+[Unit]
+Description=TeamSpeak 3 Server Daemon (Enterprise Edition)
+After=network.target network-online.target
+Wants=network-online.target
+Documentation=https://www.teamspeak.com/
+
+[Service]
+Type=simple
+User=teamspeak
+Group=teamspeak
+WorkingDirectory=/opt/teamspeak
+ExecStart=/opt/teamspeak/ts3server inifile=/opt/teamspeak/ts3server.ini
+Restart=always
+RestartSec=3s
+
+# Latency and Resource Optimization
+Nice=-5
+LimitNOFILE=65535
+LimitNPROC=32768
+LimitMEMLOCK=infinity
+
+# Security & Sandboxing (Ubuntu Hardened)
+ProtectSystem=full
+ProtectHome=true
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=teamspeak
+
+[Install]
+WantedBy=multi-user.target

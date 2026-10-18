@@ -1,0 +1,11 @@
+[Unit]
+Description=TeamSpeak 3 Server Health Watchdog & Auto-Healer
+After=teamspeak.service
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/opt/teamspeak/scripts/watchdog.sh
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ts3-watchdog
