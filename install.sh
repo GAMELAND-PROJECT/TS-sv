@@ -98,6 +98,7 @@ cp -f "${INSTALLER_DIR}/config/manager.conf" "${TARGET_DIR}/config/manager.conf"
 cp -rf "${INSTALLER_DIR}/scripts/"* "${TARGET_DIR}/scripts/"
 chmod +x "${TARGET_DIR}/scripts/"*.sh
 chmod +x "${TARGET_DIR}/ts3server"
+chmod +x "${TARGET_DIR}/ts3server_startscript.sh"
 
 cp -f "${INSTALLER_DIR}/ts3ctl" /usr/local/bin/ts3ctl
 cp -f "${INSTALLER_DIR}/ts3ctl" "${TARGET_DIR}/ts3ctl"

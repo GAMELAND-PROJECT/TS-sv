@@ -5,33 +5,25 @@ Wants=network-online.target
 Documentation=https://www.teamspeak.com/
 
 [Service]
-Type=simple
+Type=forking
 User=teamspeak
 Group=teamspeak
 WorkingDirectory=/opt/teamspeak
-ExecStart=/opt/teamspeak/ts3server inifile=/opt/teamspeak/ts3server.ini
+ExecStart=/opt/teamspeak/ts3server_startscript.sh start inifile=ts3server.ini
+ExecStop=/opt/teamspeak/ts3server_startscript.sh stop
+ExecReload=/opt/teamspeak/ts3server_startscript.sh restart inifile=ts3server.ini
+PIDFile=/opt/teamspeak/ts3server.pid
 Restart=always
-RestartSec=3s
+RestartSec=5s
 
-# Latency and Resource Optimization
+# Latency and System Resource Limits
 Nice=-5
 LimitNOFILE=65535
 LimitNPROC=32768
 LimitMEMLOCK=infinity
 
-# Security & Sandboxing (Ubuntu Hardened)
-ProtectSystem=full
-ProtectHome=true
-NoNewPrivileges=true
-PrivateTmp=true
-ProtectControlGroups=true
-ProtectKernelModules=true
-ProtectKernelTunables=true
-
-# Logging
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=teamspeak
+# Critical Library Path (prevents vtable/pure virtual function crashes on modern Ubuntu)
+Environment="LD_LIBRARY_PATH=/opt/teamspeak"
 
 [Install]
 WantedBy=multi-user.target
