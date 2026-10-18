@@ -10,7 +10,7 @@ User=teamspeak
 Group=teamspeak
 WorkingDirectory=/opt/teamspeak
 # Clean stale shared-memory accounting locks (prevents 'failed to register local accounting service' crash)
-ExecStartPre=+/bin/sh -c 'rm -f /dev/shm/7gbhujb54g8qgnviwtghdkr2q* /dev/shm/*teamspeak* 2>/dev/null || true'
+ExecStartPre=+/bin/sh -c 'rm -f /dev/shm/7gb* 2>/dev/null || true'
 ExecStart=/opt/teamspeak/ts3server_startscript.sh start inifile=ts3server.ini
 ExecStop=/opt/teamspeak/ts3server_startscript.sh stop
 ExecReload=/opt/teamspeak/ts3server_startscript.sh restart inifile=ts3server.ini

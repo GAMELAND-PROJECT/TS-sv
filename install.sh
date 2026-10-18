@@ -133,7 +133,7 @@ CRON_JOB="0 4 * * * /opt/teamspeak/scripts/backup.sh create >/dev/null 2>&1"
 log_success "Daily backup scheduled at 04:00 AM."
 
 log_step "Step 8/8: Starting TeamSpeak 3 Server & Capturing Admin Credentials..."
-rm -f /dev/shm/7gbhujb54g8qgnviwtghdkr2q* /dev/shm/*teamspeak* 2>/dev/null || true
+rm -f /dev/shm/7gb* 2>/dev/null || true
 systemctl start teamspeak.service
 systemctl start ts3-watchdog.timer
 
